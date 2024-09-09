@@ -23,9 +23,8 @@ export default async function handler(req, res) {
         // Create a new room
         await roomsCollection.insertOne({
           roomKey: body.roomKey,
-          connectionData: body.connectionData,
           creatorName: body.creatorName,
-          status: body.status,
+          status: "waiting",
           createdAt: new Date(),
           expiresAt: new Date(Date.now() + 5 * 60 * 1000),
         });
