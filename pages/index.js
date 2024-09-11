@@ -16,11 +16,7 @@ import {
   Box,
   Button,
   TextField,
-  Select,
-  MenuItem,
   Modal,
-  AppBar,
-  Toolbar,
   Dialog,
   DialogActions,
   DialogContent,
@@ -31,7 +27,7 @@ import {
   Link,
   Fade,
 } from "@mui/material";
-import { FaBackspace, FaInfoCircle } from "react-icons/fa";
+import { FaBackspace, FaInfoCircle, FaShare } from "react-icons/fa";
 import { FavoriteRounded } from "@mui/icons-material";
 import Lottie from "react-lottie";
 import flashAnimation from "../public/flash.json";
@@ -39,11 +35,17 @@ import cheatAnimation from "../public/cheat.json";
 import celebrateAnimation from "../public/celebrate.json";
 import sadAnimation from "../public/sad.json";
 import io from "socket.io-client";
+import GameBoard from "../components/GameBoard";
+import Keyboard from "../components/Keyboard";
+import BackgroundEmojis from "../components/BackgroundEmojis";
+import HintDialog from "../components/HintDialog";
+import CelebrationModal from "../components/CelebrationModal";
+import SadModal from "../components/SadModal";
+import BackgroundGradient from "../components/BackgroundGradient";
 
 const WORD_LENGTH = 5;
 const MAX_GUESSES = 6;
 const EMOJIS = ["😀", "😎", "🤔", "🤓", "😍", "🚀", "💡", "🎉", "🌈", "🍕"];
-
 const CUSTOM_WORD_LIST = [
   "APPLE",
   "BRAVE",
@@ -125,27 +127,9 @@ const cheatLottieOptions = {
   },
 };
 
-const celebrateLottieOptions = {
-  loop: true,
-  autoplay: true,
-  animationData: celebrateAnimation,
-  rendererSettings: {
-    preserveAspectRatio: "xMidYMid slice",
-  },
-};
-
-const sadLottieOptions = {
-  loop: true,
-  autoplay: true,
-  animationData: sadAnimation,
-  rendererSettings: {
-    preserveAspectRatio: "xMidYMid slice",
-  },
-};
-
 let socket;
 
-export default function Home({ initialRoomKey }) {
+export default function Home() {
   const [word, setWord] = useState("");
   const [guesses, setGuesses] = useState(Array(MAX_GUESSES).fill(""));
   const [currentGuessIndex, setCurrentGuessIndex] = useState(0);
@@ -157,10 +141,9 @@ export default function Home({ initialRoomKey }) {
   const [timer, setTimer] = useState(0);
   const [opponentProgress, setOpponentProgress] = useState({
     guesses: 0,
-    letters: 0,
+    correctChars: 0,
   });
   const [isLoading, setIsLoading] = useState(false);
-  const [connectionEstablished, setConnectionEstablished] = useState(false);
   const [playerName, setPlayerName] = useState("");
   const [opponentName, setOpponentName] = useState("");
   const [inputFocus, setInputFocus] = useState(false);
@@ -170,18 +153,30 @@ export default function Home({ initialRoomKey }) {
   const [snackbarOpen, setSnackbarOpen] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState("");
   const [hintTaken, setHintTaken] = useState(false);
+  const [opponentHintTaken, setOpponentHintTaken] = useState(false);
   const [consecutiveWrongGuesses, setConsecutiveWrongGuesses] = useState(0);
   const [showCelebration, setShowCelebration] = useState(false);
   const [showSad, setShowSad] = useState(false);
   const [showBigBrain, setShowBigBrain] = useState(false);
   const [showPreHintAnimation, setShowPreHintAnimation] = useState(false);
+  const [incorrectGuess, setIncorrectGuess] = useState(false);
+  const [showNameInput, setShowNameInput] = useState(false);
+  const [showShareLink, setShowShareLink] = useState(false);
+  const [gameStarted, setGameStarted] = useState(false);
+  const [isHost, setIsHost] = useState(false);
 
   const router = useRouter();
 
   useEffect(() => {
     socketInitializer();
-    fetchWord();
-  }, []);
+    setIsClient(true);
+    const { room } = router.query;
+    if (room) {
+      setRoomKey(room);
+      setGameMode("1v1");
+      setShowNameInput(true);
+    }
+  }, [router.query]);
 
   const socketInitializer = async () => {
     await fetch("/api/socket");
@@ -194,40 +189,49 @@ export default function Home({ initialRoomKey }) {
 
     socket.on("roomCreated", (data) => {
       setRoomKey(data.roomKey);
-      router.push(`/${data.roomKey}`, undefined, { shallow: true });
+      setIsHost(true);
+      setShowShareLink(true);
     });
 
-    socket.on("roomJoined", (data) => {
-      setOpponentName(data.creatorName);
-      setWord(data.word);
-      setTimer(data.timer);
-      setConnectionEstablished(true);
+    socket.on("playerJoined", (data) => {
+      setOpponentName(data.playerName);
+      if (isHost) {
+        startGame();
+      }
     });
 
     socket.on("gameStarted", (data) => {
       setWord(data.word);
-      setTimer(data.timer);
+      setTimer(300); // 5 minutes
+      setGameStarted(true);
     });
 
     socket.on("opponentProgress", (data) => {
       setOpponentProgress(data);
     });
 
+    socket.on("opponentHintTaken", () => {
+      setOpponentHintTaken(true);
+    });
+
     socket.on("gameOver", (data) => {
       setGameOver(true);
-      setMessage(data.message);
+      if (data.winner === playerName) {
+        setShowCelebration(true);
+      } else {
+        setShowSad(true);
+      }
+    });
+
+    socket.on("rematch", () => {
+      resetGame();
+    });
+
+    socket.on("roomFull", () => {
+      setSnackbarMessage("Room is full.");
+      setSnackbarOpen(true);
     });
   };
-
-  useEffect(() => {
-    setIsClient(true);
-    if (initialRoomKey) {
-      setRoomKey(initialRoomKey);
-      setGameMode("join");
-    } else if (gameMode === "solo") {
-      fetchWord();
-    }
-  }, [initialRoomKey, gameMode]);
 
   const fetchWord = async () => {
     setIsLoading(true);
@@ -236,7 +240,6 @@ export default function Home({ initialRoomKey }) {
         "https://random-word-api.herokuapp.com/word?length=5"
       );
       let newWord = response.data[0].toUpperCase();
-
       try {
         await axios.get(
           `https://api.dictionaryapi.dev/api/v2/entries/en/${newWord}`
@@ -244,9 +247,7 @@ export default function Home({ initialRoomKey }) {
       } catch {
         newWord = getUniqueWordFromCustomList();
       }
-
       setWord(newWord);
-      // console.log(newWord);
       Cookies.set("lastWord", newWord, { expires: 1 });
     } catch (error) {
       console.error("Error fetching word:", error);
@@ -279,7 +280,8 @@ export default function Home({ initialRoomKey }) {
 
   const handleKeyPress = useCallback(
     async (key) => {
-      if (gameOver || inputFocus) return;
+      if (gameOver || inputFocus || (gameMode === "1v1" && !gameStarted))
+        return;
 
       const currentGuess = guesses[currentGuessIndex];
 
@@ -304,15 +306,15 @@ export default function Home({ initialRoomKey }) {
         setCurrentGuessIndex((prevIndex) => prevIndex + 1);
         setMessage("");
 
-        if (gameMode !== "solo") {
-          const newOpponentProgress = {
-            guesses: currentGuessIndex + 1,
-            letters: newGuesses.join("").length,
-          };
-          setOpponentProgress(newOpponentProgress);
+        const correctChars = currentGuess
+          .split("")
+          .filter((char, index) => word[index] === char).length;
+
+        if (gameMode === "1v1") {
           socket.emit("updateProgress", {
             roomKey,
-            progress: newOpponentProgress,
+            guesses: currentGuessIndex + 1,
+            correctChars,
           });
         }
 
@@ -320,17 +322,19 @@ export default function Home({ initialRoomKey }) {
           setGameOver(true);
           setShowCelebration(true);
           setConsecutiveWrongGuesses(0);
-          if (gameMode !== "solo") {
-            socket.emit("gameOver", { roomKey, message: "You lost!" });
+          if (gameMode === "1v1") {
+            socket.emit("gameOver", { roomKey, winner: playerName });
           }
         } else {
           setConsecutiveWrongGuesses((prev) => prev + 1);
+          setIncorrectGuess(true);
+          setTimeout(() => setIncorrectGuess(false), 1000);
           if (currentGuessIndex + 1 >= MAX_GUESSES) {
             setGameOver(true);
             setShowSad(true);
             setMessage(`Game Over. The word was: ${word}`);
-            if (gameMode !== "solo") {
-              socket.emit("gameOver", { roomKey, message: "You won!" });
+            if (gameMode === "1v1") {
+              socket.emit("gameOver", { roomKey, winner: opponentName });
             }
           }
         }
@@ -346,7 +350,18 @@ export default function Home({ initialRoomKey }) {
         setGuesses(newGuesses);
       }
     },
-    [guesses, currentGuessIndex, gameOver, word, gameMode, inputFocus, roomKey]
+    [
+      guesses,
+      currentGuessIndex,
+      gameOver,
+      word,
+      gameMode,
+      inputFocus,
+      roomKey,
+      playerName,
+      opponentName,
+      gameStarted,
+    ]
   );
 
   useEffect(() => {
@@ -380,10 +395,10 @@ export default function Home({ initialRoomKey }) {
             clearInterval(interval);
             setGameOver(true);
             setMessage("Time's up!");
-            if (gameMode !== "solo") {
+            if (gameMode === "1v1") {
               socket.emit("gameOver", {
                 roomKey,
-                message: "Time's up! You won!",
+                winner: "Time's up! It's a draw.",
               });
             }
             return 0;
@@ -396,21 +411,55 @@ export default function Home({ initialRoomKey }) {
     }
   }, [timer, gameMode, roomKey]);
 
+  const enter1v1Mode = () => {
+    setShowNameInput(true);
+  };
+
   const createRoom = () => {
-    setGameMode("create");
     socket.emit("createRoom", { playerName });
+    setGameMode("1v1");
   };
 
-  const joinRoom = (joinRoomKey) => {
-    setRoomKey(joinRoomKey);
-    setGameMode("join");
-    socket.emit("joinRoom", { roomKey: joinRoomKey, playerName });
+  const joinRoom = () => {
+    socket.emit("joinRoom", { roomKey, playerName });
+    setGameMode("1v1");
   };
 
-  const startGame = (selectedTimer) => {
-    const timerValue = selectedTimer * 60;
-    setTimer(timerValue);
-    socket.emit("startGame", { roomKey, word, timer: timerValue });
+  const startGame = () => {
+    fetchWord();
+    setTimer(300); // 5 minutes
+    setGameStarted(true);
+    if (gameMode === "1v1") {
+      socket.emit("startGame", { roomKey, word });
+    }
+  };
+
+  const exitRoom = () => {
+    socket.emit("leaveRoom", { roomKey });
+    setRoomKey("");
+    setGameMode("solo");
+    resetGame();
+    router.push("/", undefined, { shallow: true });
+  };
+
+  const rematch = () => {
+    socket.emit("rematch", { roomKey });
+  };
+
+  const resetGame = () => {
+    setGuesses(Array(MAX_GUESSES).fill(""));
+    setCurrentGuessIndex(0);
+    setGameOver(false);
+    setShowCelebration(false);
+    setShowSad(false);
+    setHintTaken(false);
+    setOpponentHintTaken(false);
+    setConsecutiveWrongGuesses(0);
+    fetchWord();
+    if (gameMode === "1v1") {
+      setTimer(300);
+      setGameStarted(true);
+    }
   };
 
   const handleHintRequest = () => {
@@ -420,35 +469,30 @@ export default function Home({ initialRoomKey }) {
         setShowPreHintAnimation(false);
         setTimeout(() => {
           setHintDialogOpen(true);
-        }, 500); // Delay to ensure fade out is complete
+        }, 500);
       }, 3000);
     }
-  };
-
-  const showHintDialog = () => {
-    requestAnimationFrame(() => {
-      setHintDialogOpen(true);
-    });
   };
 
   const handleHintConfirm = (confirm) => {
     setHintDialogOpen(false);
     if (confirm) {
-      setShowBigBrain({ show: true, fade: "in" });
+      setShowBigBrain(true);
       setTimeout(() => {
-        setShowBigBrain({ show: true, fade: "out" });
-        setTimeout(() => {
-          setShowBigBrain({ show: false, fade: "out" });
-          setShowHint(true);
-          setHintTaken(true);
-        }, 500); // Wait for fade out
-      }, 1000); // Show for 2 seconds
+        setShowBigBrain(false);
+        setShowHint(true);
+        setHintTaken(true);
+        if (gameMode === "1v1") {
+          socket.emit("hintTaken", { roomKey });
+        }
+      }, 2000);
     } else {
       setSnackbarMessage("Wise Choice, mate.");
       setSnackbarOpen(true);
       setTimeout(() => setSnackbarOpen(false), 2000);
     }
   };
+
   const getHint = () => {
     const hintIndices = [1, 3];
     return word
@@ -471,283 +515,213 @@ export default function Home({ initialRoomKey }) {
     setTimeout(() => setSnackbarOpen(false), 2000);
   };
 
-  const handlePlayAgain = () => {
-    window.location.reload();
+  const handleShareLink = () => {
+    const link = `${window.location.origin}/?room=${roomKey}`;
+    navigator.clipboard.writeText(link).then(() => {
+      setSnackbarMessage("Link copied to clipboard!");
+      setSnackbarOpen(true);
+    });
   };
-
-  useEffect(() => {
-    if (gameOver) {
-      axios
-        .delete(`/api/rooms?roomKey=${roomKey}`)
-        .catch((error) => console.error("Error deleting room:", error));
-    }
-  }, [gameOver, roomKey]);
 
   if (!isClient) {
     return null;
   }
 
   return (
-    <StyledEngineProvider injectFirst>
-      <ThemeProvider theme={theme}>
-        <CssBaseline />
-        <Container maxWidth="sm">
-          <Head>
-            <title>Griddle</title>
-            <link rel="icon" href="/favicon.ico" />
-            <meta
-              name="format-detection"
-              content="telephone=no, date=no, email=no, address=no"
-            />
-          </Head>
+    <ThemeProvider theme={theme}>
+      <CssBaseline />
+      <Container maxWidth="sm">
+        <Head>
+          <title>Griddle</title>
+          <link rel="icon" href="/favicon.ico" />
+          <meta
+            name="format-detection"
+            content="telephone=no, date=no, email=no, address=no"
+          />
+        </Head>
 
-          <Box
-            sx={{
-              minHeight: "100vh",
-              display: "flex",
-              flexDirection: "column",
-              justifyContent: "center",
-              alignItems: "center",
-              position: "relative",
-              overflow: "hidden",
-            }}
-          >
-            <Typography
-              variant="h2"
-              component="h1"
-              gutterBottom
-              sx={{ color: "primary.main" }}
-            >
-              Griddle
-            </Typography>
+        <BackgroundGradient
+          gameMode={gameMode}
+          incorrectGuess={incorrectGuess}
+        />
+        <BackgroundEmojis
+          onHintRequest={handleHintRequest}
+          hintTaken={hintTaken}
+          consecutiveWrongGuesses={consecutiveWrongGuesses}
+        />
 
-            <Box
-              sx={{
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                mb: 4,
-              }}
-            >
-              <Button
-                variant="contained"
-                onClick={() => setGameMode("create")}
-                sx={{ mr: 2 }}
-              >
-                Create Room
-              </Button>
-              <Button variant="contained" onClick={() => setGameMode("join")}>
-                Join Room
-              </Button>
-              <IconButton color="primary" sx={{ ml: 2 }}>
-                <FaInfoCircle />
-              </IconButton>
-            </Box>
-
-            {gameMode === "create" && !connectionEstablished && (
-              <Box sx={{ mb: 2 }}>
-                <TextField
-                  value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
-                  placeholder="Enter your name"
-                  sx={{ mr: 1 }}
-                  onFocus={() => setInputFocus(true)}
-                  onBlur={() => setInputFocus(false)}
-                />
-                <Button
-                  variant="contained"
-                  onClick={createRoom}
-                  disabled={!playerName}
-                >
-                  Create Room
-                </Button>
-                {roomKey && (
-                  <Typography variant="body1" sx={{ mt: 2 }}>
-                    Room Key: {roomKey}
-                  </Typography>
-                )}
-              </Box>
-            )}
-
-            {gameMode === "join" && !connectionEstablished && (
-              <Box sx={{ mb: 2 }}>
-                <TextField
-                  value={playerName}
-                  onChange={(e) => setPlayerName(e.target.value)}
-                  placeholder="Enter your name"
-                  sx={{ mr: 1, mb: 1 }}
-                  onFocus={() => setInputFocus(true)}
-                  onBlur={() => setInputFocus(false)}
-                />
-                {!initialRoomKey && (
-                  <TextField
-                    value={roomKey}
-                    onChange={(e) => setRoomKey(e.target.value)}
-                    placeholder="Enter Room Key"
-                    sx={{ mr: 1 }}
-                    onFocus={() => setInputFocus(true)}
-                    onBlur={() => setInputFocus(false)}
-                  />
-                )}
-                <Button
-                  variant="contained"
-                  onClick={() => joinRoom(roomKey)}
-                  disabled={!roomKey || !playerName}
-                >
-                  Join Room
-                </Button>
-              </Box>
-            )}
-
-            {connectionEstablished && (
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Connected to: {opponentName}
-              </Typography>
-            )}
-
-            {connectionEstablished && gameMode === "create" && (
-              <Box sx={{ mb: 2 }}>
-                <Select
-                  value={timer / 60}
-                  onChange={(e) => startGame(e.target.value)}
-                  sx={{ mt: 1 }}
-                >
-                  <MenuItem value={3}>3 minutes</MenuItem>
-                  <MenuItem value={5}>5 minutes</MenuItem>
-                  <MenuItem value={8}>8 minutes</MenuItem>
-                </Select>
-              </Box>
-            )}
-
-            {timer > 0 && (
-              <Typography variant="h6" sx={{ mb: 2 }}>
-                Time Remaining: {Math.floor(timer / 60)}:
-                {(timer % 60).toString().padStart(2, "0")}
-              </Typography>
-            )}
-
-            {gameMode !== "solo" && (
-              <Typography variant="body1" sx={{ mb: 2 }}>
-                Opponent Progress: {opponentProgress.guesses} guesses,{" "}
-                {opponentProgress.letters} letters
-              </Typography>
-            )}
-
-            {showHint && (
-              <Typography variant="h6" sx={{ mb: 2, color: "warning.main" }}>
-                Hint: {getHint()}
-              </Typography>
-            )}
-
-            <Box
-              sx={{
-                display: "flex",
-                flexDirection: "column",
-                alignItems: "center",
-                mb: 4,
-              }}
-            >
-              {guesses.map((guess, i) => (
-                <Box key={i} sx={{ display: "flex", mb: 1 }}>
-                  {Array(WORD_LENGTH)
-                    .fill()
-                    .map((_, j) => (
-                      <Box
-                        key={j}
-                        sx={{
-                          width: 50,
-                          height: 50,
-                          border: "2px solid",
-                          borderColor: "primary.main",
-                          borderRadius: 2,
-                          display: "flex",
-                          justifyContent: "center",
-                          alignItems: "center",
-                          fontSize: "1.5rem",
-                          fontWeight: "bold",
-                          mr: 1,
-                          backgroundColor:
-                            i < currentGuessIndex
-                              ? getLetterClass(guess, j, word)
-                              : "rgba(0, 0, 0, 0.3)",
-                          color:
-                            i < currentGuessIndex
-                              ? "white"
-                              : "rgba(255, 255, 255, 0.7)",
-                          transition: theme.transitions.create(
-                            ["background-color"],
-                            {
-                              duration: theme.transitions.duration.standard,
-                            }
-                          ),
-                        }}
-                      >
-                        {guess[j]}
-                      </Box>
-                    ))}
-                </Box>
-              ))}
-            </Box>
-            <Keyboard
-              onKeyPress={handleKeyPress}
-              guesses={guesses.slice(0, currentGuessIndex)}
-              word={word}
-            />
-            {message && (
-              <Typography variant="h6" sx={{ mt: 2, textAlign: "center" }}>
-                {message}
-              </Typography>
-            )}
-          </Box>
-
-          <BackgroundEmojis />
-
-          {/* Cheat button */}
+        <Box
+          sx={{
+            minHeight: "100vh",
+            display: "flex",
+            flexDirection: "column",
+            justifyContent: "center",
+            alignItems: "center",
+            position: "relative",
+            overflow: "hidden",
+          }}
+        >
           <Box
             sx={{
               position: "fixed",
               top: 16,
-              left: 0,
-              cursor: "pointer",
+              right: 16, // Move the logo to the right corner
               zIndex: 1000,
             }}
-            onClick={handleHintRequest}
           >
-            <Lottie options={cheatLottieOptions} height={90} width={90} />
-          </Box>
-
-          <Box
-            sx={{
-              position: "fixed",
-              bottom: 16,
-              left: 0,
-              right: 0,
-              textAlign: "center",
-            }}
-          >
-            <Typography variant="body2" color="textSecondary">
-              Made with{" "}
-              <FavoriteRounded
-                fontSize="small"
-                sx={{ color: "red", verticalAlign: "middle" }}
-              />{" "}
-              by{" "}
-              <Link
-                href="https://ybtheflash.in"
-                target="_blank"
-                rel="noopener noreferrer"
-                onMouseEnter={handleAboutHover}
-                sx={{
-                  color: "inherit",
-                  textDecoration: "none",
-                  "&:hover": { textDecoration: "none" },
-                }}
-              >
-                ybtheflash
-              </Link>
+            <Typography
+              variant="h4" // Medium size
+              component="h1"
+              gutterBottom
+              sx={{
+                color: gameMode === "1v1" ? "#FADA5E" : "primary.main", // Royal yellow in 1v1 mode, default otherwise
+                fontWeight: "bold", // Smooth and bold
+                textShadow: "1px 1px 2px rgba(0, 0, 0, 0.5)", // Smoother appearance
+              }}
+            >
+              Griddle
             </Typography>
           </Box>
-        </Container>
+
+          {gameMode === "solo" && !showNameInput && (
+            <Button variant="contained" onClick={enter1v1Mode} sx={{ mb: 2 }}>
+              Enter 1v1 Mode
+            </Button>
+          )}
+
+          {showNameInput && (
+            <Box sx={{ mb: 2 }}>
+              <TextField
+                value={playerName}
+                onChange={(e) => setPlayerName(e.target.value)}
+                placeholder="Enter your name"
+                sx={{ mr: 1 }}
+                onFocus={() => setInputFocus(true)}
+                onBlur={() => setInputFocus(false)}
+              />
+              <Button
+                variant="contained"
+                onClick={roomKey ? joinRoom : createRoom}
+                disabled={!playerName}
+              >
+                {roomKey ? "Join Room" : "Create Room"}
+              </Button>
+            </Box>
+          )}
+
+          {gameMode === "1v1" && (
+            <>
+              <Button variant="contained" onClick={exitRoom} sx={{ mb: 2 }}>
+                Exit 1v1 Mode
+              </Button>
+              <Typography variant="body1" sx={{ mb: 1 }}>
+                Room Key: {roomKey}
+              </Typography>
+              {showShareLink && (
+                <Button
+                  variant="contained"
+                  onClick={handleShareLink}
+                  startIcon={<FaShare />}
+                  sx={{ mb: 2 }}
+                >
+                  Share Room Link
+                </Button>
+              )}
+              <Typography variant="body1" sx={{ mb: 1 }}>
+                Opponent: {opponentName || "Waiting for opponent..."}
+              </Typography>
+              {!gameStarted && isHost && opponentName && (
+                <Button variant="contained" onClick={startGame}>
+                  Start Game
+                </Button>
+              )}
+            </>
+          )}
+
+          {timer > 0 && (
+            <Typography variant="h6" sx={{ mb: 2 }}>
+              Time Remaining: {Math.floor(timer / 60)}:
+              {(timer % 60).toString().padStart(2, "0")}
+            </Typography>
+          )}
+
+          {gameMode === "1v1" && gameStarted && (
+            <Typography variant="body1" sx={{ mb: 2 }}>
+              Opponent Progress: {opponentProgress.guesses} guesses,{" "}
+              {opponentProgress.correctChars} correct characters
+              {opponentHintTaken && " (Hint used)"}
+            </Typography>
+          )}
+
+          {showHint && (
+            <Typography variant="h6" sx={{ mb: 2, color: "warning.main" }}>
+              Hint: {getHint()}
+            </Typography>
+          )}
+
+          <GameBoard
+            guesses={guesses}
+            currentGuessIndex={currentGuessIndex}
+            word={word}
+          />
+          <Keyboard
+            onKeyPress={handleKeyPress}
+            guesses={guesses.slice(0, currentGuessIndex)}
+            word={word}
+          />
+
+          {message && (
+            <Typography variant="h6" sx={{ mt: 2, textAlign: "center" }}>
+              {message}
+            </Typography>
+          )}
+        </Box>
+
+        <Box
+          sx={{
+            position: "fixed",
+            top: 16,
+            left: 16,
+            cursor: "pointer",
+            zIndex: 1000,
+          }}
+          onClick={handleHintRequest}
+        >
+          <Lottie options={cheatLottieOptions} height={50} width={50} />
+        </Box>
+
+        <Box
+          sx={{
+            position: "fixed",
+            bottom: 16,
+            left: 0,
+            right: 0,
+            textAlign: "center",
+          }}
+        >
+          <Typography variant="body2" color="textSecondary">
+            Made with{" "}
+            <FavoriteRounded
+              fontSize="small"
+              sx={{ color: "red", verticalAlign: "middle" }}
+            />{" "}
+            by{" "}
+            <Link
+              href="https://ybtheflash.in"
+              target="_blank"
+              rel="noopener noreferrer"
+              onMouseEnter={handleAboutHover}
+              sx={{
+                color: "inherit",
+                textDecoration: "none",
+                "&:hover": { textDecoration: "none" },
+              }}
+            >
+              ybtheflash
+            </Link>
+          </Typography>
+        </Box>
+
         <Fade in={isLoading}>
           <Box
             sx={{
@@ -766,61 +740,13 @@ export default function Home({ initialRoomKey }) {
             <Lottie options={lottieOptions} height={200} width={200} />
           </Box>
         </Fade>
-        <Box
-          sx={{
-            position: "fixed",
-            top: 0,
-            left: 0,
-            right: 0,
-            bottom: 0,
-            backgroundColor: "rgba(0, 0, 0, 1)",
-            display: "flex",
-            justifyContent: "center",
-            alignItems: "center",
-            zIndex: 9999,
-            opacity: showPreHintAnimation ? 1 : 0,
-            visibility: showPreHintAnimation ? "visible" : "hidden",
-            transition: "opacity 0.5s, visibility 0.5s",
-          }}
-        >
-          <Typography
-            variant="h4"
-            component="div"
-            sx={{ color: "white", textAlign: "center" }}
-          >
-            A wild hint box has appeared!
-          </Typography>
-        </Box>
-        <Dialog
+
+        <HintDialog
           open={hintDialogOpen}
-          onClose={() => handleHintConfirm(false)}
-          aria-labelledby="hint-dialog-title"
-          aria-describedby="hint-dialog-description"
-          PaperProps={{
-            style: {
-              opacity: hintDialogOpen ? 1 : 0,
-              transition: "opacity 0.5s",
-            },
-          }}
-        >
-          <DialogTitle id="hint-dialog-title">
-            {"You sure you wanna be a cheater?"}
-          </DialogTitle>
-          <DialogContent>
-            <DialogContentText
-              id="hint-dialog-description"
-              sx={{ fontSize: "0.8rem", color: "text.secondary" }}
-            >
-              like your ex?
-            </DialogContentText>
-          </DialogContent>
-          <DialogActions>
-            <Button onClick={() => handleHintConfirm(false)}>No</Button>
-            <Button onClick={() => handleHintConfirm(true)} autoFocus>
-              Yes
-            </Button>
-          </DialogActions>
-        </Dialog>
+          onClose={() => setHintDialogOpen(false)}
+          onConfirm={handleHintConfirm}
+        />
+
         <Snackbar
           anchorOrigin={{ vertical: "top", horizontal: "center" }}
           open={snackbarOpen}
@@ -833,40 +759,8 @@ export default function Home({ initialRoomKey }) {
             },
           }}
         />
+
         {showBigBrain && (
-          <Fade in={showBigBrain.show} timeout={{ enter: 500, exit: 500 }}>
-            <Box
-              sx={{
-                position: "fixed",
-                top: 0,
-                left: 0,
-                right: 0,
-                bottom: 0,
-                display: "flex",
-                justifyContent: "center",
-                alignItems: "center",
-                backgroundColor: "rgba(0, 0, 0, 0.5)",
-                zIndex: 9999,
-              }}
-            >
-              <Box
-                sx={{
-                  width: "200px",
-                  height: "200px",
-                  position: "relative",
-                }}
-              >
-                <Image
-                  src="/bigbrain.gif"
-                  alt="Big Brain"
-                  layout="fill"
-                  objectFit="contain"
-                />
-              </Box>
-            </Box>
-          </Fade>
-        )}
-        {showCelebration && (
           <Box
             sx={{
               position: "fixed",
@@ -875,28 +769,34 @@ export default function Home({ initialRoomKey }) {
               right: 0,
               bottom: 0,
               display: "flex",
-              flexDirection: "column",
               justifyContent: "center",
               alignItems: "center",
               backgroundColor: "rgba(0, 0, 0, 0.8)",
               zIndex: 9999,
             }}
           >
-            <Lottie options={celebrateLottieOptions} height={200} width={200} />
-            <Typography variant="h4" sx={{ mt: 2, color: "white" }}>
-              You won at {currentGuessIndex}
-              {getOrdinalSuffix(currentGuessIndex)} try!
-            </Typography>
-            <Button
-              variant="contained"
-              onClick={handlePlayAgain}
-              sx={{ mt: 2 }}
-            >
-              Play Again?
-            </Button>
+            <Image
+              src="/bigbrain.gif"
+              alt="Big Brain"
+              width={200}
+              height={200}
+            />
           </Box>
         )}
-        {showSad && (
+
+        <CelebrationModal
+          show={showCelebration}
+          onPlayAgain={gameMode === "1v1" ? rematch : resetGame}
+          gameMode={gameMode}
+        />
+
+        <SadModal
+          show={showSad}
+          onPlayAgain={gameMode === "1v1" ? rematch : resetGame}
+          gameMode={gameMode}
+        />
+
+        <Fade in={showPreHintAnimation} timeout={500}>
           <Box
             sx={{
               position: "fixed",
@@ -904,203 +804,23 @@ export default function Home({ initialRoomKey }) {
               left: 0,
               right: 0,
               bottom: 0,
+              backgroundColor: "rgba(0, 0, 0, 0.9)",
               display: "flex",
-              flexDirection: "column",
               justifyContent: "center",
               alignItems: "center",
-              backgroundColor: "rgba(0, 0, 0, 0.8)",
               zIndex: 9999,
             }}
           >
-            <Lottie options={sadLottieOptions} height={200} width={200} />
-            <Typography variant="h4" sx={{ mt: 2, color: "white" }}>
-              Better luck next time!
+            <Typography
+              variant="h4"
+              component="div"
+              sx={{ color: "white", textAlign: "center" }}
+            >
+              A wild hint box has appeared!
             </Typography>
-            <Button
-              variant="contained"
-              onClick={handlePlayAgain}
-              sx={{ mt: 2 }}
-            >
-              Try Again?
-            </Button>
           </Box>
-        )}
-      </ThemeProvider>
-    </StyledEngineProvider>
-  );
-}
-
-function getOrdinalSuffix(n) {
-  const s = ["th", "st", "nd", "rd"];
-  const v = n % 100;
-  return s[(v - 20) % 10] || s[v] || s[0];
-}
-
-function getLetterClass(guess, index, word) {
-  if (!guess[index]) return "rgba(255, 255, 255, 0.1)";
-
-  const guessLetter = guess[index];
-  const wordLetters = word.split("");
-
-  if (guessLetter === wordLetters[index]) {
-    return "success.main";
-  }
-
-  if (wordLetters.includes(guessLetter)) {
-    const correctPositions = wordLetters.filter(
-      (letter) => letter === guessLetter
-    ).length;
-    const guessPositions = guess
-      .substring(0, index + 1)
-      .split("")
-      .filter((letter) => letter === guessLetter).length;
-    if (guessPositions <= correctPositions) {
-      return "warning.main";
-    }
-  }
-
-  return "text.disabled";
-}
-
-function Keyboard({ onKeyPress, guesses, word }) {
-  const rows = [
-    ["Q", "W", "E", "R", "T", "Y", "U", "I", "O", "P"],
-    ["A", "S", "D", "F", "G", "H", "J", "K", "L"],
-    ["ENTER", "Z", "X", "C", "V", "B", "N", "M", "BACKSPACE"],
-  ];
-
-  return (
-    <Box sx={{ mt: 2 }}>
-      {rows.map((row, i) => (
-        <Box key={i} sx={{ display: "flex", justifyContent: "center", mb: 1 }}>
-          {row.map((key) => (
-            <Button
-              key={key}
-              onClick={() => onKeyPress(key)}
-              variant="contained"
-              sx={{
-                mx: 0.25,
-                minWidth: key === "ENTER" || key === "BACKSPACE" ? 65 : 40,
-                height: 50,
-                backgroundColor: getKeyClass(key, guesses, word),
-                color: "black",
-                transition: theme.transitions.create(
-                  ["background-color", "transform"],
-                  {
-                    duration: theme.transitions.duration.shortest,
-                  }
-                ),
-                "&:hover": {
-                  backgroundColor: getKeyClass(key, guesses, word),
-                  opacity: 0.8,
-                  transform: "scale(1.05)",
-                },
-                "&:active": {
-                  transform: "scale(0.95)",
-                },
-              }}
-            >
-              {key === "BACKSPACE" ? <FaBackspace /> : key}
-            </Button>
-          ))}
-        </Box>
-      ))}
-    </Box>
-  );
-}
-
-function getKeyClass(key, guesses, word) {
-  const guessedLetters = guesses.join("").split("");
-  if (guessedLetters.includes(key)) {
-    if (word.includes(key)) {
-      if (
-        [...word].some(
-          (letter, i) => letter === key && guessedLetters[i] === key
-        )
-      ) {
-        return "success.main";
-      }
-      return "warning.main";
-    }
-    return "text.disabled";
-  }
-  return "#ffff00";
-}
-
-function BackgroundEmojis() {
-  const [emojiPositions, setEmojiPositions] = useState([]);
-
-  useEffect(() => {
-    const generateEmojiGrid = () => {
-      const containerWidth = window.innerWidth;
-      const containerHeight = window.innerHeight;
-      const rows = 5;
-      const cols = 5;
-      const cellWidth = containerWidth / cols;
-      const cellHeight = containerHeight / rows;
-
-      const positions = [];
-      for (let i = 0; i < rows; i++) {
-        for (let j = 0; j < cols; j++) {
-          positions.push({
-            top: i * cellHeight + Math.random() * (cellHeight / 2),
-            left: j * cellWidth + Math.random() * (cellWidth / 2),
-            rotation: Math.random() * 360,
-            duration: Math.random() * 20 + 20,
-            emoji: EMOJIS[Math.floor(Math.random() * EMOJIS.length)],
-          });
-        }
-      }
-
-      setEmojiPositions(positions);
-    };
-
-    generateEmojiGrid();
-    window.addEventListener("resize", generateEmojiGrid);
-
-    return () => {
-      window.removeEventListener("resize", generateEmojiGrid);
-    };
-  }, []);
-
-  return (
-    <Box
-      sx={{
-        position: "fixed",
-        top: 0,
-        left: 0,
-        right: 0,
-        bottom: 0,
-        pointerEvents: "none",
-        zIndex: -1,
-      }}
-    >
-      {emojiPositions.map((position, i) => (
-        <Box
-          key={i}
-          sx={{
-            position: "absolute",
-            fontSize: "2rem",
-            color: "rgba(255, 255, 255, 0.3)",
-            animation: `spin ${position.duration}s linear infinite`,
-            top: position.top,
-            left: position.left,
-            transform: `rotate(${position.rotation}deg)`,
-          }}
-        >
-          {position.emoji}
-        </Box>
-      ))}
-      <style jsx global>{`
-        @keyframes spin {
-          from {
-            transform: rotate(0deg);
-          }
-          to {
-            transform: rotate(360deg);
-          }
-        }
-      `}</style>
-    </Box>
+        </Fade>
+      </Container>
+    </ThemeProvider>
   );
 }
